@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>School Timetable</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="#">School Timetable</a>
+      </div>
+    </nav>
+    <main class="container">
+      <div class="row">
+        <div class="col-md-8">
+          <h3>Timetable (placeholder)</h3>
+          <div id="timetable-list">Loading...</div>
+        </div>
+        <div class="col-md-4">
+          <h5>Add Entry</h5>
+          <form id="entry-form">
+            <div class="mb-2">
+              <input class="form-control" name="class_name" placeholder="Class name" required>
+            </div>
+            <div class="mb-2">
+              <input class="form-control" name="day" placeholder="Day" required>
+            </div>
+            <div class="mb-2">
+              <input class="form-control" name="start_time" placeholder="Start time" required>
+            </div>
+            <div class="mb-2">
+              <input class="form-control" name="end_time" placeholder="End time" required>
+            </div>
+            <div class="mb-2">
+              <input class="form-control" name="subject" placeholder="Subject" required>
+            </div>
+            <button class="btn btn-success" type="submit">Add</button>
+          </form>
+        </div>
+      </div>
+    </main>
+    <script>
+      async function load() {
+        const res = await fetch('/api/timetable');
+        const data = await res.json();
+        const el = document.getElementById('timetable-list');
+        if (!data.length) el.innerText = 'No entries yet';
+        else {
+          el.innerHTML = data.map(d => `<div class="card mb-2"><div class="card-body"><strong>${d.class_name}</strong> — ${d.day} ${d.start_time}-${d.end_time}<br>${d.subject}</div></div>`).join('\n');
+        }
+      }
+      document.getElementById('entry-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const body = Object.fromEntries(new FormData(form).entries());
+        await fetch('/api/timetable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        form.reset();
+        load();
+      });
+      load();
+    </script>
+  </body>
+  </html>

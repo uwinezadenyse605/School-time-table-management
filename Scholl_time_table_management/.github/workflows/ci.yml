@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: example
+          MYSQL_DATABASE: school_timetable
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent" --health-interval=10s --health-timeout=5s --health-retries=3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install dependencies
+        run: npm ci
+      - name: Wait for MySQL
+        run: |
+          for i in `seq 1 30`; do
+            mysql -h 127.0.0.1 -P 3306 -u root -pexample -e "SELECT 1" && break || sleep 2
+          done
+        env:
+          MYSQL_PWD: example
+      - name: Run tests
+        env:
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASSWORD: example
+          DB_NAME: school_timetable
+        run: npm test
+      - name: Build Docker image
+        run: docker build -t school-timetable:ci .
+      - name: Slack notification (optional)
+        if: failure()
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' --data "{\"text\": \"CI job failed for $GITHUB_REPOSITORY ($GITHUB_REF)\"}" $SLACK_WEBHOOK_URL
+          else
+            echo "SLACK_WEBHOOK_URL not set, skipping slack notify"
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
