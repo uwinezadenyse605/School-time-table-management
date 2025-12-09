@@ -58,3 +58,29 @@ groups:
       # HTTP status code recording rules
       - record: 'job:http_requests_total:by_status:rate5m'
         expr: 'sum by (job, status) (rate(http_requests_total[5m]))'
+
+      # SLO / Error budget recording rules
+      - record: 'slo:error_rate:30d'
+        expr: |
+          (
+            sum(increase(http_requests_total{status=~"5.."}[30d]))
+            /
+            sum(increase(http_requests_total[30d]))
+          )
+
+      - record: 'slo:burnrate:5m'
+        expr: |
+          (
+            (
+              sum(increase(http_requests_total{status=~"5.."}[5m]))
+              /
+              sum(increase(http_requests_total[5m]))
+            )
+            / 0.01
+          )
+
+      - record: 'slo:error_budget_remaining:30d'
+        expr: |
+          (
+            1 - (slo:error_rate:30d / 0.01)
+          )
