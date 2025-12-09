@@ -1,0 +1,160 @@
+---
+# School Timetable Deployment with Resource Requests and Limits
+# This enables the HPA to accurately scale based on utilization
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: school-timetable
+  namespace: default
+  labels:
+    app: school-timetable
+    version: v1
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: school-timetable
+  template:
+    metadata:
+      labels:
+        app: school-timetable
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: school-timetable
+      containers:
+        - name: school-timetable
+          image: school-timetable:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+            - name: metrics
+              containerPort: 3000
+              protocol: TCP
+          # Resource requests: minimum guaranteed resources
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            # Resource limits: maximum allowed resources
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # Health checks for orchestration
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          # Environment variables
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: school-timetable-config
+                  key: db_host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: school-timetable-secrets
+                  key: db_user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: school-timetable-secrets
+                  key: db_password
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: school-timetable-config
+                  key: db_name
+          # Volume mounts if needed
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/school-timetable
+      volumes:
+        - name: logs
+          emptyDir: {}
+      # Pod disruption budget ref (see hpa.yaml)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - school-timetable
+                topologyKey: kubernetes.io/hostname
+---
+# ConfigMap for non-sensitive configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: school-timetable-config
+  namespace: default
+data:
+  db_host: "mysql.default.svc.cluster.local"
+  db_name: "school_timetable"
+---
+# Secrets for sensitive data (base64 encoded in real environment)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: school-timetable-secrets
+  namespace: default
+type: Opaque
+data:
+  # In production, use 'echo -n "value" | base64' to encode
+  db_user: cm9vdA==  # root
+  db_password: ZXhhbXBsZQ==  # example
+---
+# ServiceAccount for Pod security
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: school-timetable
+  namespace: default
+---
+# Service for internal communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: school-timetable
+  namespace: default
+  labels:
+    app: school-timetable
+spec:
+  type: ClusterIP
+  selector:
+    app: school-timetable
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

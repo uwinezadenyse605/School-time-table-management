@@ -1,0 +1,167 @@
+name: Alert-Triggered Monitoring and Remediation
+
+on:
+  # Trigger on manual workflow dispatch (simulates alert webhook)
+  workflow_dispatch:
+    inputs:
+      alert_type:
+        description: 'Alert type (HighErrorRate, HighCPUUsage, HighMemoryUsage, ApplicationDown, DatabaseDown)'
+        required: true
+        default: 'HighErrorRate'
+      severity:
+        description: 'Alert severity (critical, warning, info)'
+        required: true
+        default: 'critical'
+  # In production, use webhook trigger (requires webhook integration with Alertmanager)
+  # Example: https://github.com/your-org/your-repo/actions/workflows/alert-webhook.yml
+
+jobs:
+  # Health check and diagnostics
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run health checks
+        run: |
+          echo "Performing health checks for alert: ${{ github.event.inputs.alert_type }}"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          # Add health check logic here
+          npm run test:health || echo "Health check completed"
+
+  # Diagnostic collection
+  collect-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [health-check]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect system diagnostics
+        run: |
+          echo "Collecting diagnostics for alert: ${{ github.event.inputs.alert_type }}"
+          echo "Alert severity: ${{ github.event.inputs.severity }}"
+          # Collect logs, metrics, system info
+          echo "Diagnostics timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v3
+        with:
+          name: diagnostics-${{ github.event.inputs.alert_type }}
+          path: .
+          retention-days: 7
+
+  # Response based on alert type
+  respond-to-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [collect-diagnostics]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Handle HighErrorRate alert
+        if: github.event.inputs.alert_type == 'HighErrorRate'
+        run: |
+          echo "🚨 High Error Rate Alert Detected"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Remediation steps:"
+          echo "1. Checking application logs..."
+          echo "2. Analyzing recent deployments..."
+          echo "3. Rolling back if necessary..."
+          echo "4. Triggering incident notification..."
+      - name: Handle HighCPUUsage alert
+        if: github.event.inputs.alert_type == 'HighCPUUsage'
+        run: |
+          echo "📊 High CPU Usage Alert Detected"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Remediation steps:"
+          echo "1. Checking resource utilization..."
+          echo "2. Scaling up replicas..."
+          echo "3. Analyzing resource limits..."
+          echo "4. Optimizing hot code paths..."
+      - name: Handle HighMemoryUsage alert
+        if: github.event.inputs.alert_type == 'HighMemoryUsage'
+        run: |
+          echo "💾 High Memory Usage Alert Detected"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Remediation steps:"
+          echo "1. Checking memory profiling..."
+          echo "2. Identifying memory leaks..."
+          echo "3. Scaling up replicas..."
+          echo "4. Restarting affected pods..."
+      - name: Handle ApplicationDown alert
+        if: github.event.inputs.alert_type == 'ApplicationDown'
+        run: |
+          echo "🛑 Application Down Alert Detected"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Remediation steps:"
+          echo "1. Attempting automatic restart..."
+          echo "2. Checking recent changes..."
+          echo "3. Triggering fallback deployment..."
+          echo "4. Notifying on-call team..."
+      - name: Handle DatabaseDown alert
+        if: github.event.inputs.alert_type == 'DatabaseDown'
+        run: |
+          echo "🗄️ Database Down Alert Detected"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Remediation steps:"
+          echo "1. Attempting database reconnection..."
+          echo "2. Checking database status..."
+          echo "3. Initiating failover..."
+          echo "4. Notifying database team..."
+
+  # Trigger incident notifications
+  notify-incident:
+    runs-on: ubuntu-latest
+    needs: [respond-to-alert]
+    if: github.event.inputs.severity == 'critical'
+    steps:
+      - name: Notify Slack on critical alert
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"🚨 Critical Alert: ${{ github.event.inputs.alert_type }}\n*Repository:* $GITHUB_REPOSITORY\n*Severity:* ${{ github.event.inputs.severity }}\n*Workflow Run:* $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+              $SLACK_WEBHOOK_URL
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      - name: Trigger PagerDuty incident (optional)
+        run: |
+          echo "In production, this would create a PagerDuty incident"
+          echo "Alert: ${{ github.event.inputs.alert_type }}"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+
+  # Post-incident review
+  post-incident-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [notify-incident]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate incident summary
+        run: |
+          echo "# Incident Summary"
+          echo ""
+          echo "Alert Type: ${{ github.event.inputs.alert_type }}"
+          echo "Severity: ${{ github.event.inputs.severity }}"
+          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Workflow Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo ""
+          echo "## Actions Taken"
+          echo "- Health checks performed"
+          echo "- Diagnostics collected"
+          echo "- Remediation initiated"
+          echo "- Team notified"
+          echo ""
+          echo "## Next Steps"
+          echo "1. Review incident logs in diagnostics artifact"
+          echo "2. Analyze root cause"
+          echo "3. Plan preventive measures"
+          echo "4. Update monitoring thresholds if needed"

@@ -1,0 +1,60 @@
+groups:
+  - name: recording_rules
+    interval: 15s
+    rules:
+      # Request rate recording rules
+      - record: 'job:http_requests_total:rate5m'
+        expr: 'sum by (job) (rate(http_requests_total[5m]))'
+
+      - record: 'job:http_requests_total:rate1m'
+        expr: 'sum by (job) (rate(http_requests_total[1m]))'
+
+      # Error rate recording rules
+      - record: 'job:http_errors:rate5m'
+        expr: 'sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))'
+
+      - record: 'job:error_rate:ratio'
+        expr: |
+          (
+            sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (job) (rate(http_requests_total[5m]))
+          )
+
+      # Latency recording rules
+      - record: 'job:http_request_duration_seconds:p50'
+        expr: 'histogram_quantile(0.5, sum by (le, job) (rate(http_request_duration_seconds_bucket[5m])))'
+
+      - record: 'job:http_request_duration_seconds:p95'
+        expr: 'histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket[5m])))'
+
+      - record: 'job:http_request_duration_seconds:p99'
+        expr: 'histogram_quantile(0.99, sum by (le, job) (rate(http_request_duration_seconds_bucket[5m])))'
+
+      # Database metrics recording rules
+      - record: 'mysql:connections:ratio'
+        expr: 'mysql_global_status_threads_connected / mysql_global_variables_max_connections'
+
+      - record: 'mysql:query_rate:rate5m'
+        expr: 'sum by (instance) (rate(mysql_global_status_questions[5m]))'
+
+      - record: 'mysql:slow_queries:rate5m'
+        expr: 'sum by (instance) (rate(mysql_global_status_slow_queries[5m]))'
+
+      # System metrics recording rules
+      - record: 'node:cpu_usage:percent'
+        expr: '100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+
+      - record: 'node:memory_usage:percent'
+        expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+
+      - record: 'node:disk_usage:percent'
+        expr: '(1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100'
+
+      # Availability recording rules
+      - record: 'job:up:ratio'
+        expr: 'sum by (job) (up) / count by (job) (up)'
+
+      # HTTP status code recording rules
+      - record: 'job:http_requests_total:by_status:rate5m'
+        expr: 'sum by (job, status) (rate(http_requests_total[5m]))'

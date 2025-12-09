@@ -1,0 +1,59 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'school-timetable-monitor'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - '/etc/prometheus/alert_rules.yml'
+  - '/etc/prometheus/recording_rules.yml'
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Application metrics
+  - job_name: 'school-timetable'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics'
+
+  # Node Exporter (system metrics)
+  - job_name: 'node'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Docker metrics (via cAdvisor)
+  - job_name: 'docker'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # MySQL metrics (via mysqld_exporter)
+  - job_name: 'mysql'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['mysqld-exporter:9104']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'school-timetable-db'
+
+  # Alertmanager self-monitoring
+  - job_name: 'alertmanager'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['alertmanager:9093']
