@@ -484,7 +484,7 @@ spec:
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
-EOF
+          EOF
           # Wait for new deployment to become ready
           kubectl rollout status deployment/school-timetable-${NEW_COLOR} -n $NAMESPACE --timeout=180s
           # Switch Service selector to the new color
