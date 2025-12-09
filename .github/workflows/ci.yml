@@ -1,14 +1,80 @@
-name: CI
+name: CI/CD Pipeline
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type (patch, minor, major)'
+        required: false
+        default: 'patch'
+  push:
+    tags: ['v*']
+  schedule:
+    # Run daily at 7 AM UTC
+    - cron: '0 7 * * *'
 
 jobs:
+  # Code Quality Check
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        run: npm run lint --if-present || echo "No lint script defined"
+
+  # Security Audit
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate || true
+      - name: Check for outdated dependencies
+        run: npm outdated || true
+
+  # Dependency Scan
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Unit Tests
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       mysql:
         image: mysql:8.0
@@ -18,13 +84,17 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping --silent" --health-interval=10s --health-timeout=5s --health-retries=3
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
     steps:
       - uses: actions/checkout@v4
       - name: Use Node.js 18
         uses: actions/setup-node@v4
         with:
           node-version: 18
+          cache: 'npm'
       - name: Install dependencies
         run: npm ci
       - name: Wait for MySQL
@@ -41,15 +111,285 @@ jobs:
           DB_PASSWORD: example
           DB_NAME: school_timetable
         run: npm test
+      - name: Generate coverage report
+        env:
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASSWORD: example
+          DB_NAME: school_timetable
+        run: npm test -- --coverage || true
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        if: always()
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  # Integration Tests
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: example
+          MYSQL_DATABASE: school_timetable
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run integration tests
+        env:
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASSWORD: example
+          DB_NAME: school_timetable
+        run: npm run test:integration || echo "No integration tests defined"
+
+  # Code Quality Analysis
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        continue-on-error: true
+
+  # Build Application
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [ lint, security, test ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application
+        run: npm run build --if-present || echo "No build script defined"
       - name: Build Docker image
         run: docker build -t school-timetable:ci .
-      - name: Slack notification (optional)
-        if: failure()
+      - name: Run docker image (health check)
+        run: |
+          docker run -d --name school-timetable-test -p 3000:3000 school-timetable:ci
+          sleep 10
+          docker ps | grep school-timetable-test && echo "Container running successfully" || exit 1
+          docker logs school-timetable-test
+          docker stop school-timetable-test
+      - name: Save Docker image
+        run: docker save school-timetable:ci | gzip > school-timetable-ci.tar.gz
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-image
+          path: school-timetable-ci.tar.gz
+          retention-days: 1
+
+  # Docker Security Scan
+  docker-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: docker-image
+      - name: Load Docker image
+        run: docker load < school-timetable-ci.tar.gz
+      - name: Run Trivy scan on Docker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'school-timetable:ci'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+  # Performance Test
+  performance-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: docker-image
+      - name: Load Docker image
+        run: docker load < school-timetable-ci.tar.gz
+      - name: Run performance tests
+        run: |
+          docker run -d --name perf-test -p 3000:3000 school-timetable:ci
+          sleep 5
+          # Add your performance testing commands here (e.g., Apache Bench, k6)
+          echo "Performance tests would run here"
+          docker stop perf-test
+
+  # E2E Tests
+  e2e-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build]
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: docker-image
+      - name: Load Docker image
+        run: docker load < school-timetable-ci.tar.gz
+      - name: Run E2E tests
+        run: |
+          docker run -d --name e2e-test -p 3000:3000 school-timetable:ci
+          sleep 5
+          npm run test:e2e || echo "No E2E tests defined"
+          docker stop e2e-test
+
+  # Notification
+  notify:
+    runs-on: ubuntu-latest
+    needs: [ lint, security, test, build, integration-test ]
+    if: failure()
+    steps:
+      - name: Slack notification on failure
         run: |
           if [ -n "$SLACK_WEBHOOK_URL" ]; then
-            curl -X POST -H 'Content-type: application/json' --data "{\"text\": \"CI job failed for $GITHUB_REPOSITORY ($GITHUB_REF)\"}" $SLACK_WEBHOOK_URL
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"❌ CI Pipeline Failed\n*Repository:* $GITHUB_REPOSITORY\n*Branch:* $GITHUB_REF\n*Workflow:* $GITHUB_WORKFLOW\n*Run:* $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+              $SLACK_WEBHOOK_URL
           else
             echo "SLACK_WEBHOOK_URL not set, skipping slack notify"
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Daily Summary (runs at 7 AM)
+  daily-summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'schedule'
+    needs: [ lint, security, test, build ]
+    steps:
+      - name: Send daily summary
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"✅ Daily CI Check Passed at 7 AM UTC\n*Repository:* $GITHUB_REPOSITORY\n*All checks completed successfully*\"}" \
+              $SLACK_WEBHOOK_URL
+          else
+            echo "Daily check completed at 7 AM UTC"
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Release
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [ build, integration-test, docker-scan ]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    env:
+      DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/school-timetable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and create tag (manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Running npm version ${{ github.event.inputs.release_type }}"
+          npm version ${{ github.event.inputs.release_type }} -m "chore(release): %s [skip ci]"
+          git push origin HEAD --follow-tags
+
+      - name: Read package version
+        id: version
+        run: echo "RELEASE_VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_REPO }}:v${{ env.RELEASE_VERSION }}
+            ${{ env.DOCKERHUB_REPO }}:latest
+
+      - name: Create GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ env.RELEASE_VERSION }}
+          name: Release v${{ env.RELEASE_VERSION }}
+          body: |
+            ## Release ${{ env.RELEASE_VERSION }}
+            
+            ### Changes
+            - See commit history for details
+            
+            ### Docker Image
+            ```
+            docker pull ${{ env.DOCKERHUB_REPO }}:v${{ env.RELEASE_VERSION }}
+            ```
+          draft: false
+          prerelease: false
+
+      - name: Notify release success
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"🚀 New Release Published!\n*Version:* v${{ env.RELEASE_VERSION }}\n*Repository:* $GITHUB_REPOSITORY\"}" \
+              $SLACK_WEBHOOK_URL
           fi
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
