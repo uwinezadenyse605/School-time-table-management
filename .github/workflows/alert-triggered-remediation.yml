@@ -52,7 +52,7 @@ jobs:
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - name: Upload diagnostics
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: diagnostics-${{ github.event.inputs.alert_type }}
           path: .
