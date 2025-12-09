@@ -1,7 +1,11 @@
+---
+# Horizontal Pod Autoscaler for school-timetable deployment
+# Scales the deployment based on CPU and memory utilization
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: school-timetable-hpa
+  namespace: default
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -10,9 +14,50 @@ spec:
   minReplicas: 2
   maxReplicas: 10
   metrics:
+    # Scale based on CPU utilization
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 60
+          averageUtilization: 70
+    # Scale based on memory utilization
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+---
+# Pod Disruption Budget to ensure high availability during scaling
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: school-timetable-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: school-timetable
