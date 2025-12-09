@@ -1,0 +1,151 @@
+groups:
+  - name: school_timetable_alerts
+    interval: 30s
+    rules:
+      # Error Budget Alerts
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+          runbook_url: "https://wiki.example.com/runbooks/high-error-rate"
+
+      - alert: ErrorBudgetExhausted
+        expr: |
+          (
+            sum(increase(http_requests_total{status=~"5.."}[30d]))
+            /
+            sum(increase(http_requests_total[30d]))
+          ) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Monthly error budget exhausted"
+          description: "Monthly error rate {{ $value | humanizePercentage }} exceeds budget (1%)"
+
+      # Availability Alerts
+      - alert: ApplicationDown
+        expr: up{job="school-timetable"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "Application is down"
+          description: "School Timetable service is unavailable"
+
+      - alert: DatabaseDown
+        expr: up{job="mysql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database is down"
+          description: "MySQL database is unreachable"
+
+      # Performance Alerts
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High API latency"
+          description: "P95 latency is {{ $value }}s (threshold: 1s)"
+
+      - alert: HighCPUUsage
+        expr: |
+          (100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value | humanize }}%"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanize }}%"
+
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Low disk space"
+          description: "Less than 10% disk space available"
+
+      # Database Alerts
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of connections in use"
+
+      - alert: SlowQueries
+        expr: |
+          rate(mysql_global_status_slow_queries[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High number of slow queries"
+          description: "{{ $value | humanize }} slow queries per second"
+
+      # Request Rate Alerts
+      - alert: AbnormalTrafficDrop
+        expr: |
+          (
+            rate(http_requests_total[5m])
+            /
+            avg_over_time(rate(http_requests_total[5m] offset 1h)[1h:5m])
+          ) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Abnormal traffic drop"
+          description: "Request rate dropped to {{ $value | humanizePercentage }} of baseline"
+
+      - alert: FailedHealthChecks
+        expr: |
+          up{job="school-timetable"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: health
+        annotations:
+          summary: "Health check failures"
+          description: "Application health checks failing"
