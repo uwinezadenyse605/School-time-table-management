@@ -495,3 +495,40 @@ EOF
         run: |
           kubectl get deployments -n $NAMESPACE -o wide
           kubectl get svc school-timetable -n $NAMESPACE -o yaml
+
+      - name: Smoke test (post-deployment)
+        run: |
+          echo "Running smoke tests on deployed application..."
+          SERVICE_IP=$(kubectl get svc school-timetable -n $NAMESPACE -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+          if [ -z "$SERVICE_IP" ]; then
+            echo "Warning: Could not get service IP, skipping smoke test"
+            exit 0
+          fi
+          echo "Service IP: $SERVICE_IP"
+          # Test health endpoint
+          max_retries=10
+          for i in $(seq 1 $max_retries); do
+            echo "Attempting health check ($i/$max_retries)..."
+            if kubectl run -it --rm --restart=Never --image=curlimages/curl --namespace=$NAMESPACE curl-test -- \
+              curl -s -f -m 5 "http://$SERVICE_IP/api/health" >/dev/null 2>&1; then
+              echo "✓ Health check passed"
+              exit 0
+            fi
+            if [ $i -lt $max_retries ]; then
+              sleep 5
+            fi
+          done
+          echo "✗ Smoke test failed: health endpoint not responding"
+          exit 1
+
+      - name: Alert on deployment failure
+        if: failure()
+        run: |
+          echo "Deployment or smoke test failed - triggering alert"
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"⚠️ Deployment/Smoke Test Failed\n*Repository:* $GITHUB_REPOSITORY\n*Ref:* $GITHUB_REF\n*Run:* $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+              $SLACK_WEBHOOK_URL || true
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
