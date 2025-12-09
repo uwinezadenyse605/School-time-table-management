@@ -450,38 +450,38 @@ jobs:
           NEW_COLOR="green"
           OLD_COLOR="blue"
           # Create new deployment (school-timetable-green)
-          kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: school-timetable-${NEW_COLOR}
-  labels:
-    app: school-timetable
-    color: ${NEW_COLOR}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: school-timetable
-      color: ${NEW_COLOR}
-  template:
-    metadata:
-      labels:
-        app: school-timetable
-        color: ${NEW_COLOR}
-    spec:
-      containers:
-        - name: school-timetable
-          image: ${IMAGE}
-          ports:
-            - containerPort: 3000
-          readinessProbe:
-            httpGet:
-              path: /api/health
-              port: 3000
-            initialDelaySeconds: 5
-            periodSeconds: 10
-EOF
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: school-timetable-${NEW_COLOR}
+            labels:
+              app: school-timetable
+              color: ${NEW_COLOR}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: school-timetable
+                color: ${NEW_COLOR}
+            template:
+              metadata:
+                labels:
+                  app: school-timetable
+                  color: ${NEW_COLOR}
+              spec:
+                containers:
+                  - name: school-timetable
+                    image: ${IMAGE}
+                    ports:
+                      - containerPort: 3000
+                    readinessProbe:
+                      httpGet:
+                        path: /api/health
+                        port: 3000
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+          EOF
           # Wait for new deployment to become ready
           kubectl rollout status deployment/school-timetable-${NEW_COLOR} -n $NAMESPACE --timeout=180s
           # Switch Service selector to the new color
