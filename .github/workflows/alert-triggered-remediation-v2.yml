@@ -1,0 +1,242 @@
+name: Alert-Triggered Remediation v2
+
+on:
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      alert_type:
+        description: 'Alert type (HighErrorRate, ErrorBudgetExhausted, HighCPUUsage, HighMemoryUsage, ApplicationDown, DatabaseDown)'
+        required: true
+        default: 'HighErrorRate'
+      severity:
+        description: 'Alert severity (critical, warning, info)'
+        required: true
+        default: 'critical'
+      action:
+        description: 'Remediation action (investigate, rollback, scale, restart)'
+        required: true
+        default: 'investigate'
+  # Webhook trigger from Alertmanager (production)
+  repository_dispatch:
+    types: [alert-fired]
+
+jobs:
+  # Initial response: gather context
+  alert-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      alert_type: ${{ steps.set-alert.outputs.alert_type }}
+      severity: ${{ steps.set-alert.outputs.severity }}
+      action: ${{ steps.set-alert.outputs.action }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set alert context from inputs or webhook payload
+        id: set-alert
+        run: |
+          ALERT_TYPE="${{ github.event.inputs.alert_type || 'UnknownAlert' }}"
+          SEVERITY="${{ github.event.inputs.severity || 'info' }}"
+          ACTION="${{ github.event.inputs.action || 'investigate' }}"
+          
+          echo "alert_type=$ALERT_TYPE" >> $GITHUB_OUTPUT
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "action=$ACTION" >> $GITHUB_OUTPUT
+          
+          echo "Alert Context:"
+          echo "  Type: $ALERT_TYPE"
+          echo "  Severity: $SEVERITY"
+          echo "  Action: $ACTION"
+
+  # Investigate: check logs and metrics
+  investigate:
+    runs-on: ubuntu-latest
+    needs: [alert-context]
+    if: needs.alert-context.outputs.action == 'investigate' || needs.alert-context.outputs.severity == 'critical'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          if [ -n "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
+            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > $HOME/.kube/config
+          else
+            echo "Warning: KUBE_CONFIG_DATA not set, skipping cluster investigation"
+          fi
+
+      - name: Gather diagnostics
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n default -o wide || echo "Could not fetch pod status"
+          
+          echo ""
+          echo "=== Recent Deployment Events ==="
+          kubectl describe deployment school-timetable -n default 2>/dev/null | grep -A 20 Events || echo "No recent events"
+          
+          echo ""
+          echo "=== Recent Logs (last 50 lines) ==="
+          kubectl logs -n default -l app=school-timetable --tail=50 --all-containers=true 2>/dev/null || echo "Could not fetch logs"
+
+      - name: Check alert type and log analysis
+        run: |
+          ALERT_TYPE="${{ needs.alert-context.outputs.alert_type }}"
+          echo "Analyzing alert: $ALERT_TYPE"
+          
+          case $ALERT_TYPE in
+            HighErrorRate)
+              echo "→ High error rate detected. Check logs for 5xx errors."
+              echo "→ Recommend: investigate recent code changes, database connectivity, external APIs"
+              ;;
+            ErrorBudgetExhausted)
+              echo "→ Monthly error budget exhausted. SLO violated."
+              echo "→ Recommend: assess severity and decide on rollback or investigation"
+              ;;
+            HighCPUUsage)
+              echo "→ High CPU usage detected."
+              echo "→ Recommend: HPA should scale up, verify metrics-server is running"
+              ;;
+            HighMemoryUsage)
+              echo "→ High memory usage detected."
+              echo "→ Recommend: check for memory leaks, HPA should scale up"
+              ;;
+            ApplicationDown)
+              echo "→ Application is down (health check failed)."
+              echo "→ Recommend: restart pods or rollback recent deployment"
+              ;;
+            DatabaseDown)
+              echo "→ Database is unreachable."
+              echo "→ Recommend: verify database service, network connectivity"
+              ;;
+            *)
+              echo "→ Unknown alert type: $ALERT_TYPE"
+              ;;
+          esac
+
+  # Remediate: take action
+  remediate:
+    runs-on: ubuntu-latest
+    needs: [alert-context, investigate]
+    if: needs.alert-context.outputs.severity == 'critical'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl and tools
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          if [ -n "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
+            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > $HOME/.kube/config
+          fi
+
+      - name: Action - Scale up (on resource alerts)
+        if: contains(needs.alert-context.outputs.alert_type, 'CPU') || contains(needs.alert-context.outputs.alert_type, 'Memory')
+        run: |
+          echo "Attempting to scale up deployment..."
+          if kubectl get hpa school-timetable-hpa -n default >/dev/null 2>&1; then
+            echo "HPA exists. Checking current status..."
+            CURRENT=$(kubectl get hpa school-timetable-hpa -n default -o jsonpath='{.spec.maxReplicas}')
+            DESIRED=$(kubectl get hpa school-timetable-hpa -n default -o jsonpath='{.status.desiredReplicas}')
+            echo "Max replicas: $CURRENT, Desired: $DESIRED"
+            
+            if [ "$DESIRED" == "$CURRENT" ]; then
+              echo "HPA is at max replicas. Consider increasing maxReplicas or investigating the bottleneck."
+              exit 0
+            fi
+          else
+            echo "HPA not found. Manual scaling required."
+            kubectl scale deployment school-timetable --replicas=5 -n default || echo "Could not scale manually"
+          fi
+
+      - name: Action - Rollback (on error rate or application down)
+        if: contains(needs.alert-context.outputs.alert_type, 'ErrorRate') || needs.alert-context.outputs.alert_type == 'ApplicationDown'
+        run: |
+          echo "Checking recent deployment history for potential rollback..."
+          if kubectl get deployment school-timetable -n default >/dev/null 2>&1; then
+            echo "=== Deployment Revision History ==="
+            kubectl rollout history deployment/school-timetable -n default || echo "Could not fetch history"
+            
+            echo ""
+            echo "To rollback, run:"
+            echo "  kubectl rollout undo deployment/school-timetable -n default"
+            echo ""
+            echo "Automatic rollback requires additional logic (e.g., time-based or approval gates)."
+            echo "Consider manual approval for now."
+          fi
+
+      - name: Action - Restart pods (on application down)
+        if: needs.alert-context.outputs.alert_type == 'ApplicationDown'
+        run: |
+          echo "Restarting pods to attempt recovery..."
+          kubectl rollout restart deployment/school-timetable -n default || echo "Could not restart deployment"
+          echo "Waiting for rollout..."
+          kubectl rollout status deployment/school-timetable -n default --timeout=120s || echo "Rollout timeout"
+
+  # Notify team
+  notify:
+    runs-on: ubuntu-latest
+    needs: [alert-context, investigate, remediate]
+    if: always()
+    steps:
+      - name: Send Slack notification
+        run: |
+          if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            ALERT_TYPE="${{ needs.alert-context.outputs.alert_type }}"
+            SEVERITY="${{ needs.alert-context.outputs.severity }}"
+            ACTION="${{ needs.alert-context.outputs.action }}"
+            STATUS="${{ job.status }}"
+            
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\": \"🚨 Alert Remediation Summary\n*Alert:* $ALERT_TYPE\n*Severity:* $SEVERITY\n*Action Taken:* $ACTION\n*Status:* $STATUS\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+              "${{ secrets.SLACK_WEBHOOK_URL }}" || true
+          fi
+
+  # For ErrorBudgetExhausted: detailed analysis
+  budget-analysis:
+    runs-on: ubuntu-latest
+    needs: [alert-context]
+    if: needs.alert-context.outputs.alert_type == 'ErrorBudgetExhausted'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          if [ -n "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
+            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > $HOME/.kube/config
+          fi
+
+      - name: Analyze error budget burn
+        run: |
+          echo "=== Error Budget Analysis ==="
+          echo "Checking Prometheus metrics for burn rate and affected endpoints..."
+          
+          # Port forward to Prometheus (if accessible from runner)
+          PROM_POD=$(kubectl get pods -n default -l app=prometheus -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+          
+          if [ -n "$PROM_POD" ]; then
+            echo "Found Prometheus pod: $PROM_POD"
+            echo "In production, query:"
+            echo "  - slo:error_rate:30d (monthly error rate)"
+            echo "  - slo:burnrate:5m (burn rate in last 5 minutes)"
+            echo "  - slo:error_budget_remaining:30d (remaining budget)"
+            echo "  - http_requests_total{status=~\"5..\"} (500 errors by endpoint)"
+          else
+            echo "Prometheus not accessible from runner"
+          fi
+          
+          echo ""
+          echo "Recommendations:"
+          echo "  1. If burn rate is high (>10), investigate recent deployments"
+          echo "  2. Check for cascading failures (one service down affecting others)"
+          echo "  3. Consider capacity scaling if under resource pressure"
+          echo "  4. Document root cause and add alerting for prevention"
+

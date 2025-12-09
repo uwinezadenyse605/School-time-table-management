@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: school-timetable
+  labels:
+    app: school-timetable
+spec:
+  type: ClusterIP
+  selector:
+    app: school-timetable
+    color: blue
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+---
+# Example blue deployment (color=blue)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: school-timetable-blue
+  labels:
+    app: school-timetable
+    color: blue
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: school-timetable
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: school-timetable
+        color: blue
+    spec:
+      containers:
+        - name: school-timetable
+          image: yourorg/school-timetable:blue
+          ports:
+            - containerPort: 3000
+---
+# Example green deployment (color=green)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: school-timetable-green
+  labels:
+    app: school-timetable
+    color: green
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: school-timetable
+      color: green
+  template:
+    metadata:
+      labels:
+        app: school-timetable
+        color: green
+    spec:
+      containers:
+        - name: school-timetable
+          image: yourorg/school-timetable:green
+          ports:
+            - containerPort: 3000

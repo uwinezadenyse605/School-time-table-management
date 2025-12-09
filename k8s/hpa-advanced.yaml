@@ -1,0 +1,224 @@
+---
+# HPA with custom metrics (Prometheus)
+# Requires: prometheus-adapter (converts Prometheus metrics to custom metrics API)
+# This example scales based on request rate instead of CPU/memory
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: school-timetable-hpa-request-rate
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: school-timetable
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    # Scale based on request rate per pod (custom metric via prometheus-adapter)
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"  # target 100 req/s per pod
+    # Fallback to CPU if custom metric unavailable
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+
+---
+# Alternative: KEDA ScaledObject for Prometheus-based scaling
+# Requires: KEDA operator (keda.sh)
+# More flexible than custom metrics, supports more scalers
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: school-timetable-keda
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: school-timetable
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    # Scale based on request rate from Prometheus
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: http_request_rate
+        query: |
+          (sum(rate(http_requests_total[1m])) by (deployment)) / count(count(kube_pod_labels{pod=~"school-timetable.*"}) by (pod))
+        threshold: "100"  # scale up if request rate per pod exceeds 100 req/s
+    # Also scale on error rate spike
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: http_error_rate
+        query: |
+          (sum(rate(http_requests_total{status=~"5.."}[1m])) / sum(rate(http_requests_total[1m]))) * 100
+        threshold: "5"  # scale up if error rate exceeds 5%
+
+---
+# Memory-optimized HPA for low-memory workloads
+# Use case: read-heavy application with small pods (e.g., 64Mi request, 256Mi limit)
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: school-timetable-hpa-memory-focused
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: school-timetable
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+    # Memory-focused scaling (more aggressive than default)
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70  # lower threshold → earlier scale-up
+    # CPU as secondary check
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30  # slightly more conservative
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 30
+        - type: Pods
+          value: 1
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 600  # very conservative (10min)
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min
+
+---
+# Latency-optimized HPA for low-latency SLO
+# Use case: real-time APIs requiring <100ms P95 latency
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: school-timetable-hpa-latency-optimized
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: school-timetable
+  minReplicas: 5
+  maxReplicas: 30
+  metrics:
+    # Aggressive CPU scaling to maintain low latency
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50  # low threshold → more replicas → lower queue wait
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0  # immediate
+      policies:
+        - type: Percent
+          value: 200  # aggressive growth
+          periodSeconds: 15
+        - type: Pods
+          value: 5
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 120
+      selectPolicy: Min
+
+---
+# Cost-optimized HPA for batch processing
+# Use case: background jobs, scheduled reports (latency-tolerant)
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: school-timetable-hpa-cost-optimized
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: school-timetable
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    # Relaxed thresholds to run fewer pods most of the time
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 85
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 90
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 300  # conservative
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 900  # very conservative (15min)
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+      selectPolicy: Min
