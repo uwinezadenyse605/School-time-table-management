@@ -1,0 +1,55 @@
+name: CD
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (defaults to pushed tag or manual input)'
+        required: false
+        default: ''
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: set_tag
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "IMAGE_TAG=${{ github.event.inputs.image_tag }}" >> $GITHUB_ENV
+          elif [ -n "${{ github.ref_name }}" ]; then
+            echo "IMAGE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+          fi
+
+      - name: Prepare kubeconfig
+        run: |
+          echo "Decoding KUBE_CONFIG secret to $HOME/.kube/config"
+          mkdir -p $HOME/.kube
+          echo "$KUBE_CONFIG" | base64 --decode > $HOME/.kube/config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.28.0'
+
+      - name: Replace image placeholder with tag
+        run: |
+          IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/school-timetable:${IMAGE_TAG}
+          sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g" k8s/deployment.yaml
+
+      - name: Apply manifests
+        run: |
+          kubectl apply -f k8s/
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/school-timetable --timeout=120s
